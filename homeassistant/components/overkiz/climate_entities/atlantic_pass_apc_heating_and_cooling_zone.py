@@ -77,10 +77,11 @@ class AtlanticPassAPCHeatingAndCoolingZone(OverkizEntity, ClimateEntity):
         """Init method."""
         super().__init__(device_url, coordinator)
 
-        # Temperature sensor use the same base_device_url and use the n+1 index
-        self.temperature_device = self.executor.linked_device(
-            int(self.index_device_url) + 1
-        )
+        if self.device.subsystem_id:
+            # Temperature sensor use the same device_address and use the n+1 index
+            self.temperature_device = self.executor.linked_device(
+                self.device.subsystem_id + 1
+            )
 
     @property
     def current_temperature(self) -> float | None:

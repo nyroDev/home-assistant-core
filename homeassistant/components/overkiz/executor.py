@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from typing import Any, cast
-from urllib.parse import urlparse
 
 from pyoverkiz.enums import OverkizCommand, Protocol
 from pyoverkiz.models import Command, Device
@@ -30,7 +29,6 @@ class OverkizExecutor:
         """Initialize the executor."""
         self.device_url = device_url
         self.coordinator = coordinator
-        self.base_device_url = self.device_url.split("#")[0]
 
     @property
     def device(self) -> Device:
@@ -39,7 +37,7 @@ class OverkizExecutor:
 
     def linked_device(self, index: int) -> Device:
         """Return Overkiz device sharing the same base url."""
-        return self.coordinator.data[f"{self.base_device_url}#{index}"]
+        return self.coordinator.data[f"{self.device.base_device_url}#{index}"]
 
     def select_command(self, *commands: str) -> str | None:
         """Select first existing command in a list of commands."""
@@ -143,12 +141,3 @@ class OverkizExecutor:
     async def async_cancel_execution(self, exec_id: str) -> None:
         """Cancel running execution via execution id."""
         await self.coordinator.client.cancel_command(exec_id)
-
-    def get_gateway_id(self) -> str:
-        """
-        Retrieve gateway id from device url.
-
-        device URL (<protocol>://<gatewayId>/<deviceAddress>[#<subsystemId>])
-        """
-        url = urlparse(self.device_url)
-        return url.netloc
