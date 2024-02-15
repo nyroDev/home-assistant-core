@@ -55,9 +55,12 @@ class RoborockDataUpdateCoordinator(DataUpdateCoordinator[DeviceProp]):
             model=self.roborock_device_info.product.model,
             sw_version=self.roborock_device_info.device.fv,
         )
+        self.current_map: int | None = None
 
         if mac := self.roborock_device_info.network_info.mac:
             self.device_info[ATTR_CONNECTIONS] = {(dr.CONNECTION_NETWORK_MAC, mac)}
+        # Maps from map flag to map name
+        self.maps: dict[int, str] = {}
 
     async def verify_api(self) -> None:
         """Verify that the api is reachable. If it is not, switch clients."""
@@ -76,7 +79,8 @@ class RoborockDataUpdateCoordinator(DataUpdateCoordinator[DeviceProp]):
 
     async def release(self) -> None:
         """Disconnect from API."""
-        await self.api.async_disconnect()
+        await self.api.async_release()
+        await self.cloud_api.async_release()
 
     async def _update_device_prop(self) -> None:
         """Update device properties."""
@@ -91,6 +95,25 @@ class RoborockDataUpdateCoordinator(DataUpdateCoordinator[DeviceProp]):
         """Update data via library."""
         try:
             await self._update_device_prop()
+            self._set_current_map()
         except RoborockException as ex:
             raise UpdateFailed(ex) from ex
         return self.roborock_device_info.props
+
+    def _set_current_map(self) -> None:
+        if (
+            self.roborock_device_info.props.status is not None
+            and self.roborock_device_info.props.status.map_status is not None
+        ):
+            # The map status represents the map flag as flag * 4 + 3 -
+            # so we have to invert that in order to get the map flag that we can use to set the current map.
+            self.current_map = (
+                self.roborock_device_info.props.status.map_status - 3
+            ) // 4
+
+    async def get_maps(self) -> None:
+        """Add a map to the coordinators mapping."""
+        maps = await self.api.get_multi_maps_list()
+        if maps and maps.map_info:
+            for roborock_map in maps.map_info:
+                self.maps[roborock_map.mapFlag] = roborock_map.name
