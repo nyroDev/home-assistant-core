@@ -7,7 +7,6 @@ from datetime import datetime
 import logging
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
-import jinja2
 import voluptuous as vol
 
 from homeassistant import config as conf_util
@@ -25,9 +24,8 @@ from homeassistant.const import (
 )
 from homeassistant.core import HassJob, HomeAssistant, ServiceCall, callback
 from homeassistant.exceptions import (
-    HomeAssistantError,
+    ConfigValidationError,
     ServiceValidationError,
-    TemplateError,
     Unauthorized,
 )
 from homeassistant.helpers import config_validation as cv, event as ev, template
@@ -87,11 +85,13 @@ from .const import (  # noqa: F401
     MQTT_DISCONNECTED,
     PLATFORMS,
     RELOADABLE_PLATFORMS,
+    TEMPLATE_ERRORS,
 )
 from .models import (  # noqa: F401
     MqttCommandTemplate,
     MqttData,
     MqttValueTemplate,
+    PayloadSentinel,
     PublishPayloadType,
     ReceiveMessage,
     ReceivePayloadType,
@@ -245,11 +245,10 @@ async def async_check_config_schema(
             for config in config_items:
                 try:
                     schema(config)
-                except vol.Invalid as ex:
+                except vol.Invalid as exc:
                     integration = await async_get_integration(hass, DOMAIN)
-                    # pylint: disable-next=protected-access
-                    message, _ = conf_util._format_config_error(
-                        ex, domain, config, integration.documentation
+                    message = conf_util.format_schema_error(
+                        hass, exc, domain, config, integration.documentation
                     )
                     raise ServiceValidationError(
                         message,
@@ -258,7 +257,7 @@ async def async_check_config_schema(
                         translation_placeholders={
                             "domain": domain,
                         },
-                    ) from ex
+                    ) from exc
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -326,7 +325,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     msg_topic_template, hass
                 ).async_render(parse_result=False)
                 msg_topic = valid_publish_topic(rendered_topic)
-            except (jinja2.TemplateError, TemplateError) as exc:
+            except TEMPLATE_ERRORS as exc:
                 _LOGGER.error(
                     (
                         "Unable to publish: rendering topic template of %s "
@@ -353,7 +352,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 payload = MqttCommandTemplate(
                     template.Template(payload_template), hass=hass
                 ).async_render()
-            except (jinja2.TemplateError, TemplateError) as exc:
+            except TEMPLATE_ERRORS as exc:
                 _LOGGER.error(
                     (
                         "Unable to publish to %s: rendering payload template of "
@@ -417,14 +416,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         async def _reload_config(call: ServiceCall) -> None:
             """Reload the platforms."""
             # Fetch updated manually configured items and validate
-            if (
-                config_yaml := await async_integration_yaml_config(hass, DOMAIN)
-            ) is None:
-                # Raise in case we have an invalid configuration
-                raise HomeAssistantError(
-                    "Error reloading manually configured MQTT items, "
-                    "check your configuration.yaml"
+            try:
+                config_yaml = await async_integration_yaml_config(
+                    hass, DOMAIN, raise_on_failure=True
                 )
+            except ConfigValidationError as ex:
+                raise ServiceValidationError(
+                    str(ex),
+                    translation_domain=ex.translation_domain,
+                    translation_key=ex.translation_key,
+                    translation_placeholders=ex.translation_placeholders,
+                ) from ex
+
             # Check the schema before continuing reload
             await async_check_config_schema(hass, config_yaml)
 
@@ -541,7 +544,7 @@ async def websocket_subscribe(
         )
 
     # Perform UTF-8 decoding directly in callback routine
-    qos: int = msg["qos"] if "qos" in msg else DEFAULT_QOS
+    qos: int = msg.get("qos", DEFAULT_QOS)
     connection.subscriptions[msg["id"]] = await async_subscribe(
         hass, msg["topic"], forward_messages, encoding=None, qos=qos
     )
