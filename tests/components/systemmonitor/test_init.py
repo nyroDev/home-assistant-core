@@ -1,4 +1,5 @@
 """Test for System Monitor init."""
+
 from __future__ import annotations
 
 from unittest.mock import Mock
@@ -37,7 +38,7 @@ async def test_adding_processor_to_options(
         mock_added_config_entry.entry_id
     )
 
-    assert result["type"] == FlowResultType.FORM
+    assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "init"
 
     result = await hass.config_entries.options.async_configure(
@@ -48,7 +49,7 @@ async def test_adding_processor_to_options(
     )
     await hass.async_block_till_done()
 
-    assert result["type"] == FlowResultType.CREATE_ENTRY
+    assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["data"] == {
         "binary_sensor": {
             CONF_PROCESS: ["python3", "pip", "systemd"],
@@ -71,7 +72,6 @@ async def test_migrate_process_sensor_to_binary_sensors(
     hass: HomeAssistant,
     mock_psutil: Mock,
     mock_os: Mock,
-    mock_util: Mock,
     freezer: FrozenDateTimeFactory,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
