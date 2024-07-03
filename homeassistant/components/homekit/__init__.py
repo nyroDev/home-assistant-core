@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import defaultdict
 from collections.abc import Iterable
 from copy import deepcopy
 import ipaddress
@@ -29,6 +30,7 @@ from homeassistant.components.camera import DOMAIN as CAMERA_DOMAIN
 from homeassistant.components.device_automation.trigger import (
     async_validate_trigger_config,
 )
+from homeassistant.components.event import DOMAIN as EVENT_DOMAIN, EventDeviceClass
 from homeassistant.components.http import KEY_HASS, HomeAssistantView
 from homeassistant.components.humidifier import DOMAIN as HUMIDIFIER_DOMAIN
 from homeassistant.components.sensor import DOMAIN as SENSOR_DOMAIN, SensorDeviceClass
@@ -154,6 +156,17 @@ _HOMEKIT_CONFIG_UPDATE_TIME = (
 )
 _HAS_IPV6 = hasattr(socket, "AF_INET6")
 _DEFAULT_BIND = ["0.0.0.0", "::"] if _HAS_IPV6 else ["0.0.0.0"]
+
+
+BATTERY_CHARGING_SENSOR = (
+    BINARY_SENSOR_DOMAIN,
+    BinarySensorDeviceClass.BATTERY_CHARGING,
+)
+BATTERY_SENSOR = (SENSOR_DOMAIN, SensorDeviceClass.BATTERY)
+MOTION_SENSOR = (BINARY_SENSOR_DOMAIN, BinarySensorDeviceClass.MOTION)
+DOORBELL_EVENT_SENSOR = (EVENT_DOMAIN, EventDeviceClass.DOORBELL)
+DOORBELL_BINARY_SENSOR = (BINARY_SENSOR_DOMAIN, BinarySensorDeviceClass.OCCUPANCY)
+HUMIDITY_SENSOR = (SENSOR_DOMAIN, SensorDeviceClass.HUMIDITY)
 
 
 def _has_all_unique_names_and_ports(
@@ -351,9 +364,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     entry.async_on_unload(
-        hass.bus.async_listen_once(
-            EVENT_HOMEASSISTANT_STOP, homekit.async_stop, run_immediately=True
-        )
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, homekit.async_stop)
     )
 
     entry_data = HomeKitEntryData(
@@ -524,7 +535,7 @@ class HomeKit:
         ip_address: str | None,
         entity_filter: EntityFilter,
         exclude_accessory_mode: bool,
-        entity_config: dict,
+        entity_config: dict[str, Any],
         homekit_mode: str,
         advertise_ips: list[str],
         entry_id: str,
@@ -537,7 +548,9 @@ class HomeKit:
         self._port = port
         self._ip_address = ip_address
         self._filter = entity_filter
-        self._config = entity_config
+        self._config: defaultdict[str, dict[str, Any]] = defaultdict(
+            dict, entity_config
+        )
         self._exclude_accessory_mode = exclude_accessory_mode
         self._advertise_ips = advertise_ips
         self._entry_id = entry_id
@@ -742,7 +755,7 @@ class HomeKit:
             if acc is not None:
                 self.bridge.add_accessory(acc)
                 return acc
-        except Exception:  # pylint: disable=broad-except
+        except Exception:
             _LOGGER.exception(
                 "Failed to create a HomeKit accessory for %s", state.entity_id
             )
@@ -1076,7 +1089,7 @@ class HomeKit:
     def _async_configure_linked_sensors(
         self,
         ent_reg_ent: er.RegistryEntry,
-        device_lookup: dict[tuple[str, str | None], str],
+        lookup: dict[tuple[str, str | None], str],
         state: State,
     ) -> None:
         if (ent_reg_ent.device_class or ent_reg_ent.original_device_class) in (
@@ -1087,46 +1100,44 @@ class HomeKit:
 
         domain = state.domain
         attributes = state.attributes
+        config = self._config
+        entity_id = state.entity_id
 
         if ATTR_BATTERY_CHARGING not in attributes and (
-            battery_charging_binary_sensor_entity_id := device_lookup.get(
-                (BINARY_SENSOR_DOMAIN, BinarySensorDeviceClass.BATTERY_CHARGING)
+            battery_charging_binary_sensor_entity_id := lookup.get(
+                BATTERY_CHARGING_SENSOR
             )
         ):
-            self._config.setdefault(state.entity_id, {}).setdefault(
+            config[entity_id].setdefault(
                 CONF_LINKED_BATTERY_CHARGING_SENSOR,
                 battery_charging_binary_sensor_entity_id,
             )
 
         if ATTR_BATTERY_LEVEL not in attributes and (
-            battery_sensor_entity_id := device_lookup.get(
-                (SENSOR_DOMAIN, SensorDeviceClass.BATTERY)
-            )
+            battery_sensor_entity_id := lookup.get(BATTERY_SENSOR)
         ):
-            self._config.setdefault(state.entity_id, {}).setdefault(
+            config[entity_id].setdefault(
                 CONF_LINKED_BATTERY_SENSOR, battery_sensor_entity_id
             )
 
         if domain == CAMERA_DOMAIN:
-            if motion_binary_sensor_entity_id := device_lookup.get(
-                (BINARY_SENSOR_DOMAIN, BinarySensorDeviceClass.MOTION)
-            ):
-                self._config.setdefault(state.entity_id, {}).setdefault(
+            if motion_binary_sensor_entity_id := lookup.get(MOTION_SENSOR):
+                config[entity_id].setdefault(
                     CONF_LINKED_MOTION_SENSOR, motion_binary_sensor_entity_id
                 )
-            if doorbell_binary_sensor_entity_id := device_lookup.get(
-                (BINARY_SENSOR_DOMAIN, BinarySensorDeviceClass.OCCUPANCY)
-            ):
-                self._config.setdefault(state.entity_id, {}).setdefault(
+            if doorbell_event_entity_id := lookup.get(DOORBELL_EVENT_SENSOR):
+                config[entity_id].setdefault(
+                    CONF_LINKED_DOORBELL_SENSOR, doorbell_event_entity_id
+                )
+            elif doorbell_binary_sensor_entity_id := lookup.get(DOORBELL_BINARY_SENSOR):
+                config[entity_id].setdefault(
                     CONF_LINKED_DOORBELL_SENSOR, doorbell_binary_sensor_entity_id
                 )
 
         if domain == HUMIDIFIER_DOMAIN and (
-            current_humidity_sensor_entity_id := device_lookup.get(
-                (SENSOR_DOMAIN, SensorDeviceClass.HUMIDITY)
-            )
+            current_humidity_sensor_entity_id := lookup.get(HUMIDITY_SENSOR)
         ):
-            self._config.setdefault(state.entity_id, {}).setdefault(
+            config[entity_id].setdefault(
                 CONF_LINKED_HUMIDITY_SENSOR, current_humidity_sensor_entity_id
             )
 
@@ -1137,7 +1148,7 @@ class HomeKit:
         entity_id: str,
     ) -> None:
         """Set attributes that will be used for homekit device info."""
-        ent_cfg = self._config.setdefault(entity_id, {})
+        ent_cfg = self._config[entity_id]
         if ent_reg_ent.device_id:
             if dev_reg_ent := dev_reg.async_get(ent_reg_ent.device_id):
                 self._fill_config_from_device_registry_entry(dev_reg_ent, ent_cfg)

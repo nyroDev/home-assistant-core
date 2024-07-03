@@ -4,6 +4,7 @@ import contextlib
 import errno
 from http import HTTPStatus
 import os.path
+from pathlib import Path
 from unittest.mock import AsyncMock, PropertyMock, patch
 
 import httpx
@@ -274,8 +275,8 @@ async def test_form_only_still_sample(
 ) -> None:
     """Test various sample images #69037."""
     image_path = os.path.join(os.path.dirname(__file__), image_file)
-    with open(image_path, "rb") as image:
-        respx.get("http://127.0.0.1/testurl/1").respond(stream=image.read())
+    image_bytes = await hass.async_add_executor_job(Path(image_path).read_bytes)
+    respx.get("http://127.0.0.1/testurl/1").respond(stream=image_bytes)
     data = TESTDATA.copy()
     data.pop(CONF_STREAM_SOURCE)
     with patch("homeassistant.components.generic.async_setup_entry", return_value=True):
@@ -409,16 +410,9 @@ async def test_form_only_stream(
             user_flow["flow_id"],
             data,
         )
-        assert result1["type"] is FlowResultType.FORM
-        assert result1["step_id"] == "user_confirm_still"
-        result3 = await hass.config_entries.flow.async_configure(
-            result1["flow_id"],
-            user_input={CONF_CONFIRMED_OK: True},
-        )
-        await hass.async_block_till_done()
-    assert result3["type"] is FlowResultType.CREATE_ENTRY
-    assert result3["title"] == "127_0_0_1"
-    assert result3["options"] == {
+    assert result1["type"] is FlowResultType.CREATE_ENTRY
+    assert result1["title"] == "127_0_0_1"
+    assert result1["options"] == {
         CONF_AUTHENTICATION: HTTP_BASIC_AUTHENTICATION,
         CONF_STREAM_SOURCE: "rtsp://user:pass@127.0.0.1/testurl/2",
         CONF_USERNAME: "fred_flintstone",

@@ -13,7 +13,7 @@ from pathlib import Path
 from queue import Empty, Queue
 from threading import Thread
 import time
-from typing import TYPE_CHECKING, Any, Final, cast
+from typing import TYPE_CHECKING, Any, Final, Literal, cast
 import wave
 
 import voluptuous as vol
@@ -44,7 +44,7 @@ from homeassistant.helpers.collection import (
 )
 from homeassistant.helpers.singleton import singleton
 from homeassistant.helpers.storage import Store
-from homeassistant.helpers.typing import UNDEFINED, UndefinedType
+from homeassistant.helpers.typing import UNDEFINED, UndefinedType, VolDictType
 from homeassistant.util import (
     dt as dt_util,
     language as language_util,
@@ -56,6 +56,7 @@ from .const import (
     CONF_DEBUG_RECORDING_DIR,
     DATA_CONFIG,
     DATA_LAST_WAKE_UP,
+    DATA_MIGRATIONS,
     DOMAIN,
     WAKE_WORD_COOLDOWN,
 )
@@ -92,7 +93,7 @@ def validate_language(data: dict[str, Any]) -> Any:
     return data
 
 
-PIPELINE_FIELDS = {
+PIPELINE_FIELDS: VolDictType = {
     vol.Required("conversation_engine"): str,
     vol.Required("conversation_language"): str,
     vol.Required("language"): str,
@@ -302,21 +303,25 @@ async def async_update_pipeline(
     updates.pop("id")
     # Refactor this once we bump to Python 3.12
     # and have https://peps.python.org/pep-0692/
-    for key, val in (
-        ("conversation_engine", conversation_engine),
-        ("conversation_language", conversation_language),
-        ("language", language),
-        ("name", name),
-        ("stt_engine", stt_engine),
-        ("stt_language", stt_language),
-        ("tts_engine", tts_engine),
-        ("tts_language", tts_language),
-        ("tts_voice", tts_voice),
-        ("wake_word_entity", wake_word_entity),
-        ("wake_word_id", wake_word_id),
-    ):
-        if val is not UNDEFINED:
-            updates[key] = val
+    updates.update(
+        {
+            key: val
+            for key, val in (
+                ("conversation_engine", conversation_engine),
+                ("conversation_language", conversation_language),
+                ("language", language),
+                ("name", name),
+                ("stt_engine", stt_engine),
+                ("stt_language", stt_language),
+                ("tts_engine", tts_engine),
+                ("tts_language", tts_language),
+                ("tts_voice", tts_voice),
+                ("wake_word_entity", wake_word_entity),
+                ("wake_word_id", wake_word_id),
+            )
+            if val is not UNDEFINED
+        }
+    )
 
     await pipeline_data.pipeline_store.async_update_item(pipeline.id, updates)
 
@@ -348,7 +353,7 @@ class PipelineEvent:
     timestamp: str = field(default_factory=lambda: dt_util.utcnow().isoformat())
 
 
-PipelineEventCallback = Callable[[PipelineEvent], None]
+type PipelineEventCallback = Callable[[PipelineEvent], None]
 
 
 @dataclass(frozen=True)
@@ -376,10 +381,6 @@ class Pipeline:
         This function was added in HA Core 2023.10, previous versions will raise
         if there are unexpected items in the serialized data.
         """
-        # Migrate to new value for conversation agent
-        if data["conversation_engine"] == conversation.OLD_HOME_ASSISTANT_AGENT:
-            data["conversation_engine"] = conversation.HOME_ASSISTANT_AGENT
-
         return cls(
             conversation_engine=data["conversation_engine"],
             conversation_language=data["conversation_language"],
@@ -587,7 +588,7 @@ class PipelineRun:
                 self.audio_settings.noise_suppression_level,
             )
 
-    def __eq__(self, other: Any) -> bool:
+    def __eq__(self, other: object) -> bool:
         """Compare pipeline runs by id."""
         if isinstance(other, PipelineRun):
             return self.id == other.id
@@ -925,7 +926,7 @@ class PipelineRun:
         stt_vad: VoiceCommandSegmenter | None,
         sample_rate: int = 16000,
         sample_width: int = 2,
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Yield audio chunks until VAD detects silence or speech-to-text completes."""
         chunk_seconds = AUDIO_PROCESSOR_SAMPLES / sample_rate
         sent_vad_start = False
@@ -1188,7 +1189,7 @@ class PipelineRun:
         audio_stream: AsyncIterable[bytes],
         sample_rate: int = 16000,
         sample_width: int = 2,
-    ) -> AsyncGenerator[ProcessedAudioChunk, None]:
+    ) -> AsyncGenerator[ProcessedAudioChunk]:
         """Apply volume transformation only (no VAD/audio enhancements) with optional chunking."""
         ms_per_sample = sample_rate // 1000
         ms_per_chunk = (AUDIO_PROCESSOR_SAMPLES // sample_width) // ms_per_sample
@@ -1223,7 +1224,7 @@ class PipelineRun:
         audio_stream: AsyncIterable[bytes],
         sample_rate: int = 16000,
         sample_width: int = 2,
-    ) -> AsyncGenerator[ProcessedAudioChunk, None]:
+    ) -> AsyncGenerator[ProcessedAudioChunk]:
         """Split audio into 10 ms chunks and apply VAD/noise suppression/auto gain/volume transformation."""
         assert self.audio_processor is not None
 
@@ -1298,7 +1299,7 @@ def _pipeline_debug_recording_thread_proc(
                     wav_writer.writeframes(message)
     except Empty:
         pass  # occurs when pipeline has unexpected error
-    except Exception:  # pylint: disable=broad-exception-caught
+    except Exception:
         _LOGGER.exception("Unexpected error in debug recording thread")
     finally:
         if wav_writer is not None:
@@ -1389,7 +1390,7 @@ class PipelineInput:
                     # Send audio in the buffer first to speech-to-text, then move on to stt_stream.
                     # This is basically an async itertools.chain.
                     async def buffer_then_audio_stream() -> (
-                        AsyncGenerator[ProcessedAudioChunk, None]
+                        AsyncGenerator[ProcessedAudioChunk]
                     ):
                         # Buffered audio
                         for chunk in stt_audio_buffer:
@@ -1607,15 +1608,9 @@ class PipelineStorageCollectionWebsocket(
     """Class to expose storage collection management over websocket."""
 
     @callback
-    def async_setup(
-        self,
-        hass: HomeAssistant,
-        *,
-        create_list: bool = True,
-        create_create: bool = True,
-    ) -> None:
+    def async_setup(self, hass: HomeAssistant) -> None:
         """Set up the websocket commands."""
-        super().async_setup(hass, create_list=create_list, create_create=create_create)
+        super().async_setup(hass)
 
         websocket_api.async_register_command(
             hass,
@@ -1650,9 +1645,7 @@ class PipelineStorageCollectionWebsocket(
         try:
             await super().ws_delete_item(hass, connection, msg)
         except PipelinePreferred as exc:
-            connection.send_error(
-                msg["id"], websocket_api.const.ERR_NOT_ALLOWED, str(exc)
-            )
+            connection.send_error(msg["id"], websocket_api.ERR_NOT_ALLOWED, str(exc))
 
     @callback
     def ws_get_item(
@@ -1666,7 +1659,7 @@ class PipelineStorageCollectionWebsocket(
         if item_id not in self.storage_collection.data:
             connection.send_error(
                 msg["id"],
-                websocket_api.const.ERR_NOT_FOUND,
+                websocket_api.ERR_NOT_FOUND,
                 f"Unable to find {self.item_id_key} {item_id}",
             )
             return
@@ -1697,7 +1690,7 @@ class PipelineStorageCollectionWebsocket(
             self.storage_collection.async_set_preferred_item(msg[self.item_id_key])
         except ItemNotFound:
             connection.send_error(
-                msg["id"], websocket_api.const.ERR_NOT_FOUND, "unknown item"
+                msg["id"], websocket_api.ERR_NOT_FOUND, "unknown item"
             )
             return
         connection.send_result(msg["id"])
@@ -1818,3 +1811,47 @@ async def async_setup_pipeline_store(hass: HomeAssistant) -> PipelineData:
         PIPELINE_FIELDS,
     ).async_setup(hass)
     return PipelineData(pipeline_store)
+
+
+@callback
+def async_migrate_engine(
+    hass: HomeAssistant,
+    engine_type: Literal["conversation", "stt", "tts", "wake_word"],
+    old_value: str,
+    new_value: str,
+) -> None:
+    """Register a migration of an engine used in pipelines."""
+    hass.data.setdefault(DATA_MIGRATIONS, {})[engine_type] = (old_value, new_value)
+
+    # Run migrations when config is already loaded
+    if DATA_CONFIG in hass.data:
+        hass.async_create_background_task(
+            async_run_migrations(hass), "assist_pipeline_migration", eager_start=True
+        )
+
+
+async def async_run_migrations(hass: HomeAssistant) -> None:
+    """Run pipeline migrations."""
+    if not (migrations := hass.data.get(DATA_MIGRATIONS)):
+        return
+
+    engine_attr = {
+        "conversation": "conversation_engine",
+        "stt": "stt_engine",
+        "tts": "tts_engine",
+        "wake_word": "wake_word_entity",
+    }
+
+    updates = []
+
+    for pipeline in async_get_pipelines(hass):
+        attr_updates = {}
+        for engine_type, (old_value, new_value) in migrations.items():
+            if getattr(pipeline, engine_attr[engine_type]) == old_value:
+                attr_updates[engine_attr[engine_type]] = new_value
+
+        if attr_updates:
+            updates.append((pipeline, attr_updates))
+
+    for pipeline, attr_updates in updates:
+        await async_update_pipeline(hass, pipeline, **attr_updates)
